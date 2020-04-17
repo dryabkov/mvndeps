@@ -5,7 +5,7 @@ Build direct classes usage graph in multi-module maven project with Apache BCEL.
 
 mvn \
     clean compile com.github.dryabkov.mvndeps.reports:deps-maven-plugin:0.0.1:deps -Daggreagate=true \
-    -DpackagePrefixes=<YOUR_ROOT_PACAKGE> \
+    -DpackagePrefixes=<YOUR_ROOT_PACKAGE> \
     -DoutputClassesFile=${deps_report_root}/classes.txt \
     -DoutputClassesInfoFile=${deps_report_root}/classes-inf.txt \
     -DoutputExceptionsFile=${deps_report_root}/exc.txt \
