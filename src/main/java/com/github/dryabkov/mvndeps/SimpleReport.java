@@ -25,9 +25,11 @@ import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.plugins.annotations.ResolutionScope;
 import org.apache.maven.project.MavenProject;
 
+import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.Writer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -81,12 +83,9 @@ public class SimpleReport extends AbstractMojo {
     private MavenSession session;
 
     private void mkDirIfNotExists(File dir) {
-        if (!dir.exists()) {
-            if (!dir.mkdirs()) {
-                throw new ResultWritingException("Fail to create dir " + dir.getAbsolutePath());
-            }
+        if (!dir.exists() && !dir.mkdirs()) {
+            throw new ResultWritingException("Fail to create dir " + dir.getAbsolutePath());
         }
-
     }
 
     /**
@@ -106,56 +105,48 @@ public class SimpleReport extends AbstractMojo {
         return false;
     }
 
-    private FileWriter createFileWriter(File file, String header) {
+    private Writer createFileWriter(File file, String header) throws IOException {
         mkDirIfNotExists(file.getParentFile());
         boolean writeHeader = createNewFileIfNotExists(file);
-        try {
-            FileWriter fileWriter = new FileWriter(file, true);
-            if (writeHeader && header != null) {
-                fileWriter.write(header + "\n");
-            }
-            return fileWriter;
-        } catch (IOException e) {
-            throw new ResultWritingException(e);
+        Writer fileWriter = new BufferedWriter(new FileWriter(file, true));
+        if (writeHeader && header != null) {
+            fileWriter.write(header + "\n");
         }
+        return fileWriter;
     }
 
     @Override
     public void execute() {
 
         logger = getLog();
+        checkConfiguration();
+        writeClassesInfo();
+        writeClassRelations();
+        writeExceptions();
+        writePackageDiagram();
+    }
 
-        if (packagePrefixes == null || packagePrefixes.isEmpty()) {
-            throw new IllegalArgumentException("Empty config package prefixes");
-        } else {
-            for (String packagePrefix : packagePrefixes) {
-                if (packagePrefix == null || packagePrefix.trim().isEmpty()) {
-                    throw new IllegalArgumentException("Empty config package prefix");
-                }
-            }
-        }
-
-        try (FileWriter out = createFileWriter(outputClassesInfoFile,
-                "# class;isInterface;module;isEnum;isUtility")) {
-
-            for (MavenProject module : project.getCollectedProjects()) {
-                processProject(module);
-            }
-
-            for (Classinfo info : classesInfo.values()) {
-                String to = info.name;
-                for (String packagePrefix : packagePrefixes) {
-                    to = to.replace(packagePrefix, "");
-                }
-                out.write(String.format("%s;%s;%s;%s;%s\n", to, info.isInterfce, info.moduleName, info.isEnum, info.isUtility));
-            }
-        } catch (DependencyResolutionRequiredException e) {
-            throw new MavenStructureException(e);
+    private void writePackageDiagram() {
+        try (Writer out = createFileWriter(outputPackagesDiagramFile, null)) {
+            new Check(classesInfo, classes.values(), logger)
+                    .main(out);
         } catch (IOException e) {
             throw new ResultWritingException(e);
         }
+    }
 
-        try (FileWriter out = createFileWriter(outputClassesFile, "# class;class;count;reltype")) {
+    private void writeExceptions() {
+        try (Writer out = createFileWriter(outputExceptionsFile, "# package;class;count")) {
+            for (Link<String, ExceptionEnt> link : packageUsesException.values()) {
+                out.write(String.format("%s;%s;%d\n", link.getFrom(), link.getTo().getFullName(), link.getCount()));
+            }
+        } catch (IOException e) {
+            throw new ResultWritingException(e);
+        }
+    }
+
+    private void writeClassRelations() {
+        try (Writer out = createFileWriter(outputClassesFile, "# class;class;count;reltype")) {
 
             for (Link<String, String> link : classes.values()) {
                 String from = link.getFrom();
@@ -171,42 +162,62 @@ public class SimpleReport extends AbstractMojo {
         } catch (IOException e) {
             throw new ResultWritingException(e);
         }
+    }
 
-        try (FileWriter out = createFileWriter(outputExceptionsFile, "# package;class;count")) {
-            for (Link<String, ExceptionEnt> link : packageUsesException.values()) {
-                out.write(String.format("%s;%s;%d\n", link.getFrom(), link.getTo().getFullName(), link.getCount()));
+    private void writeClassesInfo() {
+
+        try {
+            for (MavenProject module : project.getCollectedProjects()) {
+                processProject(module);
+            }
+        } catch (DependencyResolutionRequiredException e) {
+            throw new MavenStructureException(e);
+        }
+
+        try (Writer out = createFileWriter(outputClassesInfoFile,
+                "# class;isInterface;module;isEnum;isUtility")) {
+
+            for (Classinfo info : classesInfo.values()) {
+                String to = info.name;
+                for (String packagePrefix : packagePrefixes) {
+                    to = to.replace(packagePrefix, "");
+                }
+                out.write(String.format("%s;%s;%s;%s;%s\n", to, info.isInterface, info.moduleName, info.isEnum, info.isUtility));
             }
         } catch (IOException e) {
             throw new ResultWritingException(e);
         }
+    }
 
-        try (FileWriter out = createFileWriter(outputPackagesDiagramFile, null)) {
-            new Check(classesInfo, classes.values())
-                    .main(out);
-        } catch (IOException e) {
-            throw new ResultWritingException(e);
+    private void checkConfiguration() {
+        if (packagePrefixes == null || packagePrefixes.isEmpty()) {
+            throw new IllegalArgumentException("Empty config package prefixes");
+        } else {
+            for (String packagePrefix : packagePrefixes) {
+                if (packagePrefix == null || packagePrefix.trim().isEmpty()) {
+                    throw new IllegalArgumentException("Empty config package prefix");
+                }
+            }
         }
-
     }
 
     private void processProject(MavenProject module) throws DependencyResolutionRequiredException {
         module.getCompileClasspathElements().forEach(cpe -> {
-            if (!cpe.endsWith(".jar") && Paths.get(cpe).toFile().exists()) {
-                if (cpe.equals(module.getBasedir().getAbsolutePath() + File.separator + "target" + File.separator + "classes")) {
-                    try (Stream<Path> pathStream = Files.walk(Paths.get(cpe))) {
-                        pathStream
-                                .filter(path -> path.getFileName().toString().endsWith(".class"))
-                                .forEach(clazz -> {
-                                    try {
-                                        JavaClass javaClass = new ClassParser(clazz.toAbsolutePath().toString()).parse();
-                                        proccessClass(module.getName(), javaClass);
-                                    } catch (ClassFormatException | IOException e) {
-                                        throw new ClassReadingException(e);
-                                    }
-                                });
-                    } catch (IOException e) {
-                        throw new ClassReadingException(e);
-                    }
+            if (!cpe.endsWith(".jar") && Paths.get(cpe).toFile().exists() &&
+                    cpe.equals(module.getBasedir().getAbsolutePath() + File.separator + "target" + File.separator + "classes")) {
+                try (Stream<Path> pathStream = Files.walk(Paths.get(cpe))) {
+                    pathStream
+                            .filter(path -> path.getFileName().toString().endsWith(".class"))
+                            .forEach(clazz -> {
+                                try {
+                                    JavaClass javaClass = new ClassParser(clazz.toAbsolutePath().toString()).parse();
+                                    proccessClass(module.getName(), javaClass);
+                                } catch (ClassFormatException | IOException e) {
+                                    throw new ClassReadingException(e);
+                                }
+                            });
+                } catch (IOException e) {
+                    throw new ClassReadingException(e);
                 }
             }
         });
@@ -222,85 +233,59 @@ public class SimpleReport extends AbstractMojo {
 
         classesInfo.put(cn, new Classinfo(moduleName, cn, javaClass.isInterface(), javaClass.isEnum(), classIsUtility));
 
-        /*
-        Arrays
-                .stream(javaClass.getAnnotationEntries())
-                .forEach(ae -> {
-                    logger.info("Check annotated " + ae.getAnnotationType());
-                    String tcn = ae.getAnnotationType().substring(1, ae.getAnnotationType().length() - 1).replaceAll("/", ".");
-                    if (tcn.startsWith(packagePrefix)) {
-                        Link<String, String> link = new Link<>(cn, tcn, 1, RelationType.ANNOTATED_WITH);
-                        classes.put(link.hashCode(), link);
-                    }
-                });
-
-         */
-
         containedPackages.computeIfAbsent(pn, k -> new AtomicInteger(0)).incrementAndGet();
 
         ConstantPool constantPool = javaClass.getConstantPool();
         for (Constant c : constantPool.getConstantPool()) {
-            if (c != null) {
-                if (c instanceof ConstantClass) {
-                    ConstantClass cc = (ConstantClass) c;
-                    String cName = cc.getBytes(constantPool);
-                    if (cName.startsWith("[L")) {
-                        cName = cName.substring(2, cName.length() - 1);
-                    }
+            if (c instanceof ConstantClass) {
+                ConstantClass cc = (ConstantClass) c;
+                String cName = cc.getBytes(constantPool);
+                if (cName.startsWith("[L")) {
+                    cName = cName.substring(2, cName.length() - 1);
+                }
 
-                    String targetPn = cName;
-                    if (cName.lastIndexOf("/") >= 0) {
-                        targetPn = cName.substring(0, cName.lastIndexOf("/")).replaceAll("/", ".");
-                    }
+                String targetPn = cName;
+                if (cName.lastIndexOf('/') >= 0) {
+                    targetPn = cName.substring(0, cName.lastIndexOf('/')).replace("/", ".");
+                }
 
-                    for (String packagePrefix : packagePrefixes) {
-                        if (targetPn.startsWith(packagePrefix)) {
+                for (String packagePrefix : packagePrefixes) {
+                    if (targetPn.startsWith(packagePrefix)) {
 
-                            String tcn = cName.replaceAll("/", ".");
-                            if (!tcn.equals(cn)) {
+                        String tcn = cName.replace("/", ".");
+                        if (!tcn.equals(cn)) {
 
-                                RelationType rt = null;
-                                if (interfaceNames.contains(tcn)) {
-                                    rt = RelationType.IMPLEMENTS;
-                                }
-                                Link<String, String> link = new Link<>(cn, tcn, 1, rt);
-
-                                if (classes.containsValue(link)) {
-                                    classes.get(link.hashCode()).incCount();
-                                } else {
-                                    classes.put(link.hashCode(), link);
-                                }
+                            RelationType rt = null;
+                            if (interfaceNames.contains(tcn)) {
+                                rt = RelationType.IMPLEMENTS;
                             }
+                            Link<String, String> link = new Link<>(cn, tcn, 1, rt);
 
-                            if (!targetPn.equals(pn)) {
-                                Link<String, String> link = new Link<>(pn, targetPn, 1);
-
-                                if (!packages.containsValue(link)) {
-                                    packages.put(link.hashCode(), link);
-                                } else {
-                                    packages.get(link.hashCode()).incCount();
-                                }
+                            if (classes.containsValue(link)) {
+                                classes.get(link.hashCode()).incCount();
+                            } else {
+                                classes.put(link.hashCode(), link);
                             }
+                        }
 
-                            if (tcn.endsWith("Exception")) {
-                                Link<String, ExceptionEnt> excLink = new Link<>(pn, new ExceptionEnt(tcn), 0);
-                                packageUsesException.computeIfAbsent(excLink.hashCode(), k -> excLink).incCount();
+                        if (!targetPn.equals(pn)) {
+                            Link<String, String> link = new Link<>(pn, targetPn, 1);
+
+                            if (!packages.containsValue(link)) {
+                                packages.put(link.hashCode(), link);
+                            } else {
+                                packages.get(link.hashCode()).incCount();
                             }
+                        }
+
+                        if (tcn.endsWith("Exception")) {
+                            Link<String, ExceptionEnt> excLink = new Link<>(pn, new ExceptionEnt(tcn), 0);
+                            packageUsesException.computeIfAbsent(excLink.hashCode(), k -> excLink).incCount();
                         }
                     }
                 }
             }
         }
-
-        /*
-        for (AnnotationEntry ae : javaClass.getAnnotationEntries()) {
-
-            if (ae.getAnnotationType().contains("org/springframework/context/annotation/ComponentScan")) {
-                checkSpringScan(pn, ae);
-            }
-        }
-
-         */
 
     }
 

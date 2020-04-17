@@ -4,7 +4,7 @@ public class Classinfo {
 
     public final String name;
 
-    public final boolean isInterfce;
+    public final boolean isInterface;
 
     public final boolean isEnum;
 
@@ -12,9 +12,9 @@ public class Classinfo {
 
     public final String moduleName;
 
-    public Classinfo(String moduleName, String name, boolean isInterfce, boolean isEnum, boolean isUtility) {
+    public Classinfo(String moduleName, String name, boolean isInterface, boolean isEnum, boolean isUtility) {
         this.name = name;
-        this.isInterfce = isInterfce;
+        this.isInterface = isInterface;
         this.isEnum = isEnum;
         this.isUtility = isUtility;
         this.moduleName = moduleName;

@@ -1,7 +1,11 @@
 package com.github.dryabkov.mvndeps.analyzer;
 
+import com.github.dryabkov.mvndeps.ClassBlock;
+import com.github.dryabkov.mvndeps.ClassBlockType;
 import com.github.dryabkov.mvndeps.Classinfo;
 import com.github.dryabkov.mvndeps.Link;
+import com.github.dryabkov.mvndeps.exceptions.CheckingInternalException;
+import org.apache.maven.plugin.logging.Log;
 import org.checkerframework.checker.nullness.qual.NonNull;
 import org.jgrapht.Graph;
 import org.jgrapht.GraphPath;
@@ -20,22 +24,26 @@ import java.util.Set;
 public class Check {
 
     @NonNull
+    private final Log logger;
+
+    @NonNull
     private final Map<String, Classinfo> classInfos;
 
     @NonNull
     private final Collection<Link<String, String>> classesRelations;
 
     public Check(@NonNull Map<String, Classinfo> classInfos,
-                 @NonNull Collection<Link<String, String>> classesRelations) {
+                 @NonNull Collection<Link<String, String>> classesRelations, @NonNull Log logger) {
 
         this.classInfos = classInfos;
         this.classesRelations = classesRelations;
+        this.logger = logger;
     }
 
     @NonNull
     private Classinfo getClassInfo(@NonNull String from) {
         if (!classInfos.containsKey(from)) {
-            throw new RuntimeException("Unknown class " + from);
+            throw new CheckingInternalException("Unknown class " + from);
         } else {
             return classInfos.get(from);
         }
@@ -44,39 +52,13 @@ public class Check {
     public void main(@NonNull Writer bufferedWriter) throws IOException {
 
         if (classesRelations.isEmpty() || classInfos.isEmpty()) {
-            System.out.println("Empty data");
+            logger.error("Empty data");
             return;
         }
 
         Graph<String, CountedEdge> graph = new DefaultDirectedGraph<>(CountedEdge.class);
-
-        Map<String, Set<String>> clusters = new HashMap<>();
-
-        for (Link<String, String> line : classesRelations) {
-            Classinfo classInfoFrom = getClassInfo(line.getFrom());
-            Classinfo classInfoTo = getClassInfo(line.getTo());
-
-            String vertexFrom = format(classInfoFrom);
-            String vertexTo = format(classInfoTo);
-
-            if (!classInfoFrom.moduleName.equals(classInfoTo.moduleName)) {
-                if (graph.containsEdge(vertexFrom, vertexTo)) {
-                    graph.getEdge(vertexFrom, vertexTo)
-                            .incCount();
-                } else {
-                    graph.addVertex(vertexFrom);
-                    graph.addVertex(vertexTo);
-                    graph.addEdge(vertexFrom, vertexTo);
-
-                    clusters.computeIfAbsent(classInfoFrom.moduleName, mn -> new HashSet<>())
-                            .add(format(classInfoFrom));
-
-                    clusters.computeIfAbsent(classInfoTo.moduleName, mn -> new HashSet<>())
-                            .add(format(classInfoTo));
-
-                }
-            }
-        }
+        Map<String, Set<ClassBlock>> clusters = new HashMap<>();
+        fillGraph(graph, clusters);
 
         writeDotHeader(bufferedWriter);
         writeDotClusters(clusters, bufferedWriter);
@@ -89,29 +71,28 @@ public class Check {
             Classinfo classInfoFrom = getClassInfo(line.getFrom());
             Classinfo classInfoTo = getClassInfo(line.getTo());
 
-            String vertexFrom = format(classInfoFrom);
-            String vertexTo = format(classInfoTo);
+            String vertexFrom = format(classInfoFrom).getName();
+            String vertexTo = format(classInfoTo).getName();
             String key = vertexFrom + "~" + vertexTo;
 
             if (!processedEdges.contains(key) && !classInfoFrom.moduleName.equals(classInfoTo.moduleName)) {
                 boolean edgeWarn = false;
-                if (!classInfoTo.isInterfce && !classInfoTo.isEnum && !classInfoTo.isUtility) {
+                if (!classInfoTo.isInterface && !classInfoTo.isEnum && !classInfoTo.isUtility) {
                     List<GraphPath<String, CountedEdge>> paths = kShortestSimplePaths.getPaths(
                             vertexFrom, vertexTo, 2);
                     if (paths.size() > 1) {
                         edgeWarn = true;
-                        //TODO system.out to logger
                         paths.forEach(path -> {
                             List<String> vertexList = path.getVertexList();
-                            System.out.print(vertexList.remove(0));
-                            vertexList.forEach(vertex -> System.out.print(" -> " + vertex));
-                            System.out.println();
+                            logger.info(vertexList.remove(0));
+                            vertexList.forEach(vertex -> logger.info(" -> " + vertex));
+                            logger.info("");
                             classesRelations.forEach(cr -> {
                                 if (getPackage(cr.getFrom()).equals(getPackage(classInfoFrom.name)) &&
                                         getPackage(cr.getTo()).equals(getPackage(classInfoTo.name))) {
                                     Classinfo candidat = getClassInfo(cr.getTo());
-                                    if (!candidat.isUtility && !candidat.isEnum && !candidat.isInterfce) {
-                                        System.out.println("    " + cr.getFrom() + " -> " + cr.getTo());
+                                    if (!candidat.isUtility && !candidat.isEnum && !candidat.isInterface) {
+                                        logger.info("    " + cr.getFrom() + " -> " + cr.getTo());
                                     }
                                 }
                             });
@@ -126,35 +107,66 @@ public class Check {
             }
         }
 
-        bufferedWriter.write("}\n");
-        bufferedWriter.close();
+        writeDotTail(bufferedWriter);
+    }
 
+    private void fillGraph(Graph<String, CountedEdge> graph, Map<String, Set<ClassBlock>> clusters) {
+        for (Link<String, String> line : classesRelations) {
+            Classinfo classInfoFrom = getClassInfo(line.getFrom());
+            Classinfo classInfoTo = getClassInfo(line.getTo());
+
+            ClassBlock from = format(classInfoFrom);
+            String vertexFrom = from.getName();
+            ClassBlock to = format(classInfoTo);
+            String vertexTo = to.getName();
+
+            if (!classInfoFrom.moduleName.equals(classInfoTo.moduleName)) {
+                if (graph.containsEdge(vertexFrom, vertexTo)) {
+                    graph.getEdge(vertexFrom, vertexTo)
+                            .incCount();
+                } else {
+                    graph.addVertex(vertexFrom);
+                    graph.addVertex(vertexTo);
+                    graph.addEdge(vertexFrom, vertexTo);
+
+                    clusters.computeIfAbsent(classInfoFrom.moduleName, mn -> new HashSet<>())
+                            .add(from);
+
+                    clusters.computeIfAbsent(classInfoTo.moduleName, mn -> new HashSet<>())
+                            .add(to);
+
+                }
+            }
+        }
     }
 
     private String getPackage(@NonNull String className) {
-        return className.substring(0, className.lastIndexOf("."));
+        return className.substring(0, className.lastIndexOf('.'));
     }
 
-    private void writeDotClusters(Map<String, Set<String>> clusters, Writer bufferedWriter) throws IOException {
-        for (Map.Entry<String, Set<String>> entry : clusters.entrySet()) {
+    private void writeDotClusters(Map<String, Set<ClassBlock>> clusters, Writer bufferedWriter) throws IOException {
+        for (Map.Entry<String, Set<ClassBlock>> entry : clusters.entrySet()) {
             bufferedWriter.write("subgraph cluster_" + entry.getKey()
                     .replaceAll("[:-]", "_")
-                    .replaceAll(" ", "_") + "{\n");
+                    .replace(" ", "_") + "{\n");
             bufferedWriter.write("label=\"" + entry.getKey() + "\";\n");
-            for (String node : entry.getValue()) {
-                //FIXME не парсить, а передавть типизировано
-                String color = "black";
-                if (node.endsWith("<I>")) {
-                    color = "blue";
+            for (ClassBlock node : entry.getValue()) {
+                String color;
+                switch (node.getType()) {
+                    case ENUMS:
+                        color = "green";
+                        break;
+                    case UTILITIES:
+                        color = "yellow";
+                        break;
+                    case INTERFACES:
+                        color = "blue";
+                        break;
+                    default:
+                        color = "black";
                 }
-                if (node.endsWith("<E>")) {
-                    color = "green";
-                }
-                if (node.endsWith("<U>")) {
-                    color = "yellow";
-                }
-                String shortName = node.substring(node.indexOf(':') + 1);
-                bufferedWriter.write(String.format("\"%s\"[color=%s,label=\"%s\"];\n", node, color, shortName));
+                String shortName = node.getName().substring(node.getName().indexOf(':') + 1);
+                bufferedWriter.write(String.format("\"%s\"[color=%s,label=\"%s\"];\n", node.getName(), color, shortName));
             }
             bufferedWriter.write("}\n");
         }
@@ -168,27 +180,36 @@ public class Check {
         bufferedWriter.write("ranksep = 4;\n");
     }
 
+    private void writeDotTail(@NonNull Writer bufferedWriter) throws IOException {
+        bufferedWriter.write("}\n");
+    }
+
     @NonNull
     private String dotFormatEdge(int count, @NonNull Classinfo from, @NonNull Classinfo to, boolean edgeWarn) {
-        return "\"" + format(from) + "\" -> \"" + format(to) + "\"" +
+        return "\"" + format(from).getName() + "\" -> \"" + format(to).getName() + "\"" +
                 (edgeWarn ? " [color=red;" + "headlabel=\"" + count + "\";]" : "")
                 + ";\n";
     }
 
     @NonNull
-    private String format(@NonNull Classinfo info) {
+    private ClassBlock format(@NonNull Classinfo info) {
         String idx;
+        ClassBlockType type;
         if (info.isEnum) {
             idx = "E";
-        } else if (info.isInterfce) {
+            type = ClassBlockType.ENUMS;
+        } else if (info.isInterface) {
             idx = "I";
+            type = ClassBlockType.INTERFACES;
         } else if (info.isUtility) {
             idx = "U";
+            type = ClassBlockType.UTILITIES;
         } else {
             idx = "C";
+            type = ClassBlockType.CONCRETE_OR_ABSTRACT;
         }
 
-        return info.moduleName + ":" + getPackage(info.name) + ".<" + idx + ">";
+        return new ClassBlock(info.moduleName + ":" + getPackage(info.name) + ".<" + idx + ">", type);
     }
 
 

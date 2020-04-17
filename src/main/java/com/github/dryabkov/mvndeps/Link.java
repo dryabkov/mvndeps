@@ -3,14 +3,14 @@ package com.github.dryabkov.mvndeps;
 
 import java.util.Objects;
 
-public class Link<FromT, ToT> {
+public class Link<F, T> {
 
-    private final FromT from;
-    private final ToT to;
+    private final F from;
+    private final T to;
     private final RelationType relationType;
     private int count;
 
-    Link(FromT from, ToT to, int count) {
+    Link(F from, T to, int count) {
 
         super();
         this.from = from;
@@ -19,7 +19,7 @@ public class Link<FromT, ToT> {
         this.relationType = null;
     }
 
-    Link(FromT from, ToT to, int count, RelationType relationType) {
+    Link(F from, T to, int count, RelationType relationType) {
 
         super();
         this.from = from;
@@ -28,12 +28,12 @@ public class Link<FromT, ToT> {
         this.relationType = relationType;
     }
 
-    public FromT getFrom() {
+    public F getFrom() {
 
         return from;
     }
 
-    public ToT getTo() {
+    public T getTo() {
 
         return to;
     }
